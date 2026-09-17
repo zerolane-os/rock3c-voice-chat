@@ -46,10 +46,41 @@ esac
 # ── main 직접 push 금지 → 브랜치 + PR ───────────────────
 # 자동 리뷰(review-prs)가 claude/ 브랜치 PR 을 리뷰·머지한다. main 에 직접 넣으면
 # 3-리뷰어 게이트를 통째로 건너뛴다.
-case "$CMD" in
-  *"git push"*" main"*|*"git push"*" origin main"*|*"git push origin HEAD:main"*)
-    block "main 직접 push 금지. claude/{agent}/{날짜}-{slug} 브랜치 + PR 로. (자동리뷰가 리뷰·머지한다)" ;;
-esac
+#
+# ⚠️ 2026-09-16 (zerolane-os#1155): 문자열 부분일치(`*" main"*` 등)는 대상 ref 를
+#    **명시한** push 만 잡는다. `git push` / `git push origin` 처럼 대상을 생략하고
+#    업스트림 트래킹에 맡기는 형태는 명령어 어디에도 "main" 이 나타나지 않아 통과된다.
+#    zerolane-erp 가 정확히 이 경로로 main 에 직접 push 됐다(#1155 자체보고).
+#    작업 트리가 main 에 서 있는 상태(흔한 기본값)에서 커밋 후 `git push` 만 치면 뚫린다.
+#    central hook(zerolane-control/observability/hooks/pre-tool-approval.sh)의
+#    토큰 분리 방식을 가져오되, "대상 ref 를 아예 안 적은 경우"에는 **현재 브랜치**를 본다.
+zl_push_targets_protected() {
+  local c="$1" w seen_push=0 nonflag=0
+  [[ "$c" =~ (^|[^[:alnum:]_])git[[:space:]]+push([[:space:]]|$) ]] || return 1
+  for w in $c; do
+    if [ "$seen_push" = "1" ]; then
+      case "$w" in
+        -*) continue ;;                              # 플래그는 건너뛴다
+        main|master|*:main|*:master) return 0 ;;     # 대상 ref 가 보호 브랜치로 명시됨
+        *) nonflag=$((nonflag+1)) ;;                  # 원격/다른 브랜치가 명시됨
+      esac
+    fi
+    [ "$w" = "push" ] && seen_push=1
+  done
+  # 원격+브랜치를 둘 다 명시했다(예: git push origin feature-x) → main 이 아니었으니 안전
+  [ "$nonflag" -ge 2 ] && return 1
+  # bare `git push` 또는 `git push <remote>` — 대상은 업스트림 트래킹, 즉 현재 브랜치다
+  local cur
+  cur="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 1
+  case "$cur" in
+    main|master) return 0 ;;
+  esac
+  return 1
+}
+
+if zl_push_targets_protected "$CMD"; then
+  block "main 직접 push 금지. claude/{agent}/{날짜}-{slug} 브랜치 + PR 로. (자동리뷰가 리뷰·머지한다. 대상을 생략한 bare git push 도 현재 브랜치가 main/master 면 차단된다)"
+fi
 
 # ── 이슈 발행권 · owner:human 경계 ──────────────────────
 # 이슈는 zerolane-os/zerolane-os 단일 트래커. 발행은 PM 단독.
